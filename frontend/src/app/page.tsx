@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type InterviewResponse = {
   session_id: string;
@@ -13,6 +13,36 @@ type AnswerResponse = {
   next_question: string;
 };
 
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognitionErrorEvent extends Event {
+  error: string;
+}
+
+interface SpeechRecognitionInstance {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechRecognitionConstructor {
+  new (): SpeechRecognitionInstance;
+}
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
 export default function Home() {
   const [mode, setMode] = useState("Technical");
   const [started, setStarted] = useState(false);
@@ -23,8 +53,64 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState("");
+  const [isListening, setIsListening] = useState(false);
+  const [speechSupported, setSpeechSupported] = useState(true);
+
+  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
   const modes = ["Technical", "Research", "HR"];
+
+  useEffect(() => {
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let transcript = "";
+
+      for (let i = 0; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript;
+      }
+
+      setAnswer(transcript);
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+      setIsListening(false);
+
+      if (event.error === "not-allowed") {
+        setError(
+          "Microphone access was denied. Please allow microphone access in your browser."
+        );
+      } else if (event.error === "no-speech") {
+        setError("No speech was detected. Please try speaking again.");
+      } else {
+        setError("Speech recognition encountered an error. Please try again.");
+      }
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.stop();
+      recognitionRef.current = null;
+    };
+  }, []);
 
   async function startInterview() {
     setLoading(true);
@@ -72,6 +158,10 @@ export default function Home() {
       return;
     }
 
+    if (isListening) {
+      stopListening();
+    }
+
     setSubmitting(true);
     setError("");
 
@@ -111,10 +201,47 @@ export default function Home() {
     }
   }
 
+  function startListening() {
+    if (!speechSupported) {
+      setError(
+        "Speech recognition is not supported by this browser. Please use Chrome or Edge."
+      );
+      return;
+    }
+
+    if (!recognitionRef.current) {
+      setError("Speech recognition is not available.");
+      return;
+    }
+
+    setError("");
+
+    try {
+      recognitionRef.current.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error(err);
+      setError("Unable to start speech recognition. Please try again.");
+    }
+  }
+
+  function stopListening() {
+    if (!recognitionRef.current) {
+      return;
+    }
+
+    try {
+      recognitionRef.current.stop();
+    } catch (err) {
+      console.error(err);
+    }
+
+    setIsListening(false);
+  }
+
   return (
     <main className="min-h-screen bg-[#05070a] text-white">
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-8">
-
         <header className="flex items-center justify-between border-b border-white/10 pb-6">
           <div>
             <h1 className="text-2xl font-semibold tracking-[0.2em]">
@@ -133,7 +260,6 @@ export default function Home() {
         </header>
 
         <section className="flex flex-1 flex-col items-center justify-center">
-
           {!started && (
             <>
               <div className="relative mb-12 flex h-56 w-56 items-center justify-center">
@@ -193,17 +319,13 @@ export default function Home() {
 
           {started && (
             <div className="mt-10 w-full max-w-3xl">
-
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-8">
-
                 <div className="flex items-center justify-between">
                   <p className="text-xs uppercase tracking-[0.3em] text-cyan-400">
                     {mode} Interview
                   </p>
 
-                  <p className="text-xs text-white/30">
-                    Live Session
-                  </p>
+                  <p className="text-xs text-white/30">Live Session</p>
                 </div>
 
                 <p className="mt-6 text-2xl leading-9 text-white/90">
@@ -213,20 +335,52 @@ export default function Home() {
                 <textarea
                   value={answer}
                   onChange={(e) => setAnswer(e.target.value)}
-                  placeholder="Type your answer here..."
+                  placeholder={
+                    isListening
+                      ? "Listening... speak your answer."
+                      : "Type your answer here or use the microphone..."
+                  }
                   rows={6}
                   className="mt-8 w-full resize-none rounded-xl border border-white/10 bg-black/30 p-5 text-sm leading-7 text-white outline-none placeholder:text-white/20 focus:border-cyan-400/40"
                 />
 
-                <div className="mt-5 flex justify-end">
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+                  {speechSupported ? (
+                    <button
+                      onClick={
+                        isListening ? stopListening : startListening
+                      }
+                      disabled={submitting}
+                      className={`rounded-full border px-6 py-3 text-sm font-medium transition ${
+                        isListening
+                          ? "border-red-400/50 bg-red-400/10 text-red-300 hover:bg-red-400/20"
+                          : "border-cyan-300/40 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/20"
+                      } disabled:cursor-not-allowed disabled:opacity-50`}
+                    >
+                      {isListening ? "● Stop Speaking" : "🎙 Speak Answer"}
+                    </button>
+                  ) : (
+                    <p className="text-xs text-white/40">
+                      Voice input is unavailable in this browser. Try Chrome
+                      or Edge.
+                    </p>
+                  )}
+
                   <button
                     onClick={submitAnswer}
-                    disabled={submitting}
+                    disabled={submitting || isListening}
                     className="rounded-full border border-cyan-300/50 bg-cyan-400/10 px-8 py-3 text-sm font-medium text-cyan-200 transition hover:bg-cyan-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {submitting ? "Evaluating..." : "Submit Answer"}
                   </button>
                 </div>
+
+                {isListening && (
+                  <div className="mt-4 flex items-center gap-2 text-xs text-cyan-300/70">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-red-400" />
+                    Listening for your answer...
+                  </div>
+                )}
               </div>
 
               {feedback && (
@@ -240,7 +394,6 @@ export default function Home() {
                   </p>
                 </div>
               )}
-
             </div>
           )}
 
@@ -249,14 +402,12 @@ export default function Home() {
               {error}
             </div>
           )}
-
         </section>
 
         <footer className="flex items-center justify-between border-t border-white/10 pt-5 text-xs text-white/30">
           <span>INTERVIEW AI v0.1.0</span>
           <span>Local-first architecture</span>
         </footer>
-
       </div>
     </main>
   );
